@@ -761,6 +761,7 @@ class CTGAN(BaseSynthesizer):
         # if self.args.use_case == 'botnet':
         #         inverse = inverse.clamp(-1000, 1000)  # TODO: for botnet?
         unconstrained_output = inverse.clone()
+        
         if self._version == "constrained" or self._version == "postprocessing":
             # inverse = get_constr_out(inverse)
             inverse = correct_preds(inverse, self.ordering, self.sets_of_constr)
