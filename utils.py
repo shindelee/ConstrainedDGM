@@ -9,8 +9,6 @@ import sys
 import json
 
 
-
-
 def all_div_gt_n(n, m):
     for i in range(n, m // 2):
          if m % i == 0:
@@ -84,6 +82,7 @@ def log_dict(name, results, logger):
         logger.info(log_result)
 
 
+# determines roundable numerical columns based on whether all values in a column are whole numbers (integers) when evaluated modulo 1.
 def get_roundable_data(df):
     _is_roundable = ((df%1)==0).all(axis=0)
     roundable_cols = df.columns[_is_roundable]
@@ -92,6 +91,8 @@ def get_roundable_data(df):
     return roundable_idx, round_digits
 
 
+# determines the minimum number of decimal places required to represent all values in a given column 
+# (or iterable) without losing precision
 def get_round_decimals(col):
     MAX_DECIMALS = sys.float_info.dig - 1
     if (col == col.round(MAX_DECIMALS)).all():
@@ -99,7 +100,7 @@ def get_round_decimals(col):
          if (col == col.round(decimal)).all():
              return decimal
 
-
+# all values are identical in the column
 def single_value_cols(df):
     a = df.to_numpy()
     single_value = (a[0] == a).all(0)
@@ -119,6 +120,7 @@ def read_csv(csv_filename, use_case="", manual_inspection_cat_cols_idx=[]):
             cat_cols_names.remove(col)
         except Exception as e:
             pass
+        
     bin_cols_idx = [data.columns.get_loc(c) for c in cat_cols_names if c in data]
     roundable_idx = [i for i in roundable_idx if i not in bin_cols_idx]
     round_digits = round_digits[data.columns[roundable_idx]]
@@ -126,4 +128,5 @@ def read_csv(csv_filename, use_case="", manual_inspection_cat_cols_idx=[]):
     if len(bin_cols_idx) == 0:
         bin_cols_idx = None
         cat_cols_names = None
+        
     return data, (cat_cols_names, bin_cols_idx), (roundable_idx, round_digits)

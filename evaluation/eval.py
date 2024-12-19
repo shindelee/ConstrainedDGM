@@ -52,7 +52,7 @@ def eval_quality(real_data, generated_data_list, columns, target_column):
 
 
 
-
+# evaluates the performance of synthetic data by comparing it against real data across multiple dimensions, such as feature correlation, utility, detection metrics, and constraint satisfaction.
 def eval_synthetic_data(args, use_case, real_data, generated_data, columns, problem_type, target_utility, target_utility_size, target_detection, log_wandb, wandb_run, unrounded_generated_data_for_cons_sat=None, eval_real=False):
 
     feature_correlation(real_data["test"], log_wandb, wandb_run, "correlation_real")
@@ -113,6 +113,7 @@ def eval_synthetic_data(args, use_case, real_data, generated_data, columns, prob
     pkl.dump(utility_syn, open(f'{args.exp_path}/{save_id}_utility_scores.pkl', 'wb'), -1)
     pkl.dump((a_det, b_det, c_det, detection_avg), open(f'{args.exp_path}/{save_id}_detection_scores.pkl', 'wb'), -1)
     pkl.dump(all_avg, open(f'{args.exp_path}/{save_id}_all_avg_scores.pkl', 'wb'), -1)
+    
     with open(f'{args.exp_path}/final_{save_id}_all_avg_scores.csv', 'w') as f:
         a = ''
         b = ''
@@ -128,7 +129,7 @@ def eval_synthetic_data(args, use_case, real_data, generated_data, columns, prob
     if log_wandb:
         wandb_run.log({f"INFERENCE/constraints/all": wandb.Table(dataframe=results_cons)})
         wandb_run.log({f"INFERENCE/aggregated/constraints": wandb.Table(dataframe=cons_avg)})
-
+        # aggregated summary of utility, detection and constraint
         wandb_run.log({f"INFERENCE/aggregated/eval_metrics_syn": wandb.Table(dataframe=all_avg)})
 
         # wandb_run.log({f"INFERENCE/quality/quality": wandb.Table(dataframe=quality_scores)})
@@ -157,6 +158,7 @@ def ml_efficacy(train_data, test_data, target_col, ctype='binary'):
         classifiers = [MulticlassMLPClassifier(), MulticlassDecisionTreeClassifier()]
     elif ctype == 'regression':
         classifiers = [LinearRegression(), MLPRegressor()]    # cls_names = ["BinaryAdaBoostClassifier()", "BinaryMLPClassifier()", "BinaryDecisionTreeClassifier"]
+    
     scores = []
     for i in range(len(classifiers)):
         classifier = classifiers[i]
@@ -180,6 +182,7 @@ def ml_detection_metrics(real_data, syn_data):
     return lr, svc
 
 
+# how well the synthetic and real data adhere to a set of defined constraints
 def constraints_sat_check(args, real_data, generated_data, log_wandb):
     # Note: the ordering of the labels does not matter here
     _, constraints = parse_constraints_file(args.constraints_file)
@@ -198,6 +201,7 @@ def gen_sat_check(args, generated_data, constraints, log_wandb):
         num_constr_violated_at_least_once = 0.
         # gen_data = gen_data.iloc[:, :-1].to_numpy()
         gen_data = torch.tensor(gen_data.to_numpy())
+        
         for j, constr in enumerate(constraints):
             sat_per_datapoint = constr.single_inequality.check_satisfaction(gen_data)
             num_cons_sat_per_pred += sat_per_datapoint*1.
@@ -207,9 +211,11 @@ def gen_sat_check(args, generated_data, constraints, log_wandb):
             sat_rate_per_constr[j].append(sat_rate)
             samples_sat_constr = samples_sat_constr & sat_per_datapoint
             # print('samples_violating_constr:', samples_violating_constr.sum())
+            
         percentage_cons_sat_per_pred.append(np.array(num_cons_sat_per_pred/len(constraints)).mean())
         percentage_of_samples_sat_constraints.append(sum(samples_sat_constr) / len(samples_sat_constr))
         percentage_of_constr_violated_at_least_once.append(num_constr_violated_at_least_once/len(constraints))
+        
     sat_rate_per_constr = {i:[sum(sat_rate_per_constr[i])/len(sat_rate_per_constr[i]) * 100.0] for i in range(len(constraints))}
     percentage_cons_violations_per_pred = 100.0-sum(percentage_cons_sat_per_pred)/len(percentage_cons_sat_per_pred) * 100.0
     percentage_of_samples_violating_constraints = 100.0-sum(percentage_of_samples_sat_constraints)/len(percentage_of_samples_sat_constraints) * 100.0
@@ -227,6 +233,7 @@ def gen_sat_check(args, generated_data, constraints, log_wandb):
                                               'percentage_cons_violations_per_pred': percentage_cons_violations_per_pred,
                                               'percentage_of_constr_violated_at_least_once': percentage_of_constr_violated_at_least_once},
                                              columns=['percentage_of_samples_violating_constraints', 'percentage_cons_violations_per_pred', 'percentage_of_constr_violated_at_least_once'])
+    
     if log_wandb:
         wandb.log({f"INFERENCE/synth_constr_eval_metrics": wandb.Table(dataframe=synth_constr_eval_metrics)})
 
@@ -254,7 +261,10 @@ def real_sat_check(args, real_data, constraints, log_wandb):
                            range(len(constraints))}
     percentage_of_samples_violating_constraints = 100.0 - sum(percentage_of_samples_sat_constraints) / len(
         percentage_of_samples_sat_constraints) * 100.0
+    
+    # satisfaction rates for each constraints for synthetic data
     print('REAL', 'sat_rate_per_constr', sat_rate_per_constr)
+    
     print('REAL', 'percentage_of_samples_violating_constraints', percentage_of_samples_violating_constraints)
 
     sat_rate_per_constr = pd.DataFrame(sat_rate_per_constr, columns=list(range(len(constraints))))
@@ -273,12 +283,14 @@ def sdv_eval_synthetic_data(args, use_case, real_data, generated_data, columns, 
     lr_scores, svc_scores, adas, mlps, dts = [], [], [], [], []
     ctype = 'binary'
     ctype_stasy = 'binary_classification'
+    
     if args.use_case == 'faults':
         ctype = 'multiclass'
         ctype_stasy = 'multiclass_classification'
     elif args.use_case == 'news':
         ctype = 'regression'
         ctype_stasy = 'regression'
+        
     for i in range(len(generated_data["test"])):
         # if args.quick_eval:
         #     syn_data_shape = args.num_quick_eval_samples
@@ -314,6 +326,7 @@ def sdv_eval_synthetic_data(args, use_case, real_data, generated_data, columns, 
         svc_scores = [sum(svc_scores) / len(svc_scores)]
         adas = [sum(adas) / len(adas)]
         mlps = [sum(mlps) / len(mlps)]
+        
         if len(ml_eff_score)>2:
             dts.append(ml_eff_score[2])
             dts = [sum(dts) / len(dts)]

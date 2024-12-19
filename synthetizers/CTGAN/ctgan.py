@@ -189,6 +189,7 @@ class CTGAN(BaseSynthesizer):
         self._data_sampler = None
         self._generator = None
         self.test_data = test_data
+        
     @staticmethod
     def _gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
         """Deals with the instability of the gumbel_softmax for older versions of torch.
@@ -240,19 +241,24 @@ class CTGAN(BaseSynthesizer):
         return torch.cat(data_t, dim=1)
 
     def _apply_constrained(self, data):
-
+        
+        # inverse transformation - transform the neural network's output back to the original feature space.
         self.inverse = self._transformer.inverse_transform(data)
 
         # if self.args.use_case == 'botnet':
         #         self.inverse = self.inverse.clamp(-1000, 1000)  # TODO: for botnet?
 
+        # constraint correction
         self.constrained = correct_preds(self.inverse, self.ordering, self.sets_of_constr)
 
         if self.args.use_case != 'botnet':
+            # satisfaction check
             sat = check_all_constraints_sat(self.constrained.clone(), self.constraints)
 
         #output_transformer = self._transformer.transform(self.constrained, data)
         #self.transformed = self._transformer.transform(self.constrained, data.clone().detach())
+        
+        # transformation of the corrected data back to the format suitable for the generator
         self.transformed = self._transformer.transform(self.constrained, data)
 
         # for i in range(self.transformed.shape[1]):
@@ -287,10 +293,12 @@ class CTGAN(BaseSynthesizer):
         # only_partial = torch.cat(data_t, dim=1)
 
 
+        # during training, returns the transformed (constraint-corrected) data to be used by the discriminator
         if self._generator.training:
             return self.transformed
             #return only_partial
-
+        
+        # during evaluation, returns the inverse-transformed data without further constraints
         else:
             return self.inverse
 
@@ -307,7 +315,8 @@ class CTGAN(BaseSynthesizer):
         #lr, ada = batch_eval(generated_data, self.train_data, self.test_data)
         #lr, ada = 0, 0
         features = generated_data.detach().numpy()[:, :-1]
-        cons_rate, batch_rate, ind_score = constraint_satisfaction(features,"url")
+        # cons_rate, batch_rate, ind_score = constraint_satisfaction(features,"url")
+        cons_rate, batch_rate, ind_score = constraint_satisfaction(features,"heloc")
         self._generator.train()
 
         return cons_rate, batch_rate, ind_score
@@ -390,6 +399,7 @@ class CTGAN(BaseSynthesizer):
 
     @random_state
     def fit(self, args, train_data, discrete_columns=(), epochs=None):
+        # discrete_columns = cat_cols
         """Fit the CTGAN Synthesizer models to the training data.
 
         Args:
@@ -401,8 +411,12 @@ class CTGAN(BaseSynthesizer):
                 contain the integer indices of the columns. Otherwise, if it is
                 a ``pandas.DataFrame``, this list should contain the column names.
         """
+        
         self.args = args
-        self.constraints, self.sets_of_constr, self.ordering = self.get_sets_constraints(args.label_ordering, args.constraints_file)
+        self.constraints, self.sets_of_constr, self.ordering = self.get_sets_constraints(
+            args.label_ordering, 
+            args.constraints_file
+        )
 
         self._validate_discrete_columns(train_data, discrete_columns)
 
@@ -414,9 +428,10 @@ class CTGAN(BaseSynthesizer):
                  'in a future version. Please pass `epochs` to the constructor instead'),
                 DeprecationWarning
             )
+            
         self._transformer = DataTransformer()
-
         print('Start fit transformer', discrete_columns, train_data.shape)
+        
         # if self.args.use_case == 'lcld' or self.args.use_case == 'botnet':
         #     from utils import read_csv
         #     print('Using a tiny train data set to fit the transformer')
@@ -425,8 +440,8 @@ class CTGAN(BaseSynthesizer):
         #     self._transformer.fit(X_train_tiny, discrete_columns)
         # else:
         #     self._transformer.fit(train_data, discrete_columns)
+        
         self._transformer.fit(train_data, discrete_columns)
-
         print('End fit transformer')
 
         columns = train_data.columns.values.tolist()
@@ -441,15 +456,18 @@ class CTGAN(BaseSynthesizer):
 
         data_dim = self._transformer.output_dimensions
 
+        # generator network
         self._generator = Generator(
-            self._embedding_dim + self._data_sampler.dim_cond_vec(),
-            self._generator_dim,
-            data_dim, discrete_cols
+            self._embedding_dim + self._data_sampler.dim_cond_vec(),    # input dimension (noise, conditions)
+            self._generator_dim,                                        # generator architecture
+            data_dim,                                                   # output dimension (data features)
+            discrete_cols                 
         ).to(self._device)
 
+        # discriminator network
         discriminator = Discriminator(
-            data_dim + self._data_sampler.dim_cond_vec(),
-            self._discriminator_dim,
+            data_dim + self._data_sampler.dim_cond_vec(),               # input dimension (data features, conditions)
+            self._discriminator_dim,                                    # discriminator architecture
             pac=self.pac
         ).to(self._device)
 
@@ -464,24 +482,33 @@ class CTGAN(BaseSynthesizer):
             optimizerD = SGD(discriminator.parameters(), lr=self._discriminator_lr, momentum=0, weight_decay=self._discriminator_decay)
         else:
             pass
-
+    
+        # define the mean and standard deviation for the noise vector (z) sampled for the generator
         mean = torch.zeros(self._batch_size, self._embedding_dim, device=self._device)
         std = mean + 1
 
         steps_per_epoch = max(len(train_data) // self._batch_size, 1)
         loss_g_all, loss_d_syn_all,  loss_d_real_all, loss_d_all = [], [], [], []
 
+        # training
         for epoch in range(epochs):
+            # cumulative loss variables for the current epoch
             loss_g_running,  loss_d_syn_running, loss_d_real_running, loss_d_running = 0, 0, 0, 0
             for id_ in tqdm(range(steps_per_epoch), total=steps_per_epoch):
+                
+                # Discriminator training steps
                 mean_d = 0
                 mean_d_syn = 0
                 mean_d_real = 0
 
                 for n in range(self._discriminator_steps):
+                    
+                    # sample noise vector (z) from a normal distribution
                     fakez = torch.normal(mean=mean, std=std)
 
+                    # sample conditional vectors (c)
                     condvec = self._data_sampler.sample_condvec(self._batch_size)
+                    
                     if condvec is None:
                         c1, m1, col, opt = None, None, None, None
                         idx, real = self._data_sampler.sample_data(self._batch_size, col, opt)
@@ -491,18 +518,26 @@ class CTGAN(BaseSynthesizer):
                         m1 = torch.from_numpy(m1).to(self._device)
                         fakez = torch.cat([fakez, c1], dim=1)
 
+                        # shuffle the conditional vectors to maintain randomness
                         perm = np.arange(self._batch_size)
                         np.random.shuffle(perm)
+                        
+                        # sample real data with shuffled conditional vectors
                         idx, real = self._data_sampler.sample_data(
-                            self._batch_size, col[perm], opt[perm])
+                            self._batch_size, col[perm], opt[perm]
+                        )
                         c2 = c1[perm]
 
-
+                    # generate fake data using the generator
                     fake = self._generator(fakez)
+                    # apply activation functions to the generator's output
                     fake_act = self._apply_activate(fake)
+                    
                     if self._version=="unconstrained" or self._version == "postprocessing":
+                        # no constraints applied; clone the activated fake data
                         fakecons = fake_act.clone()
                     else:
+                        # apply constraints to adjust the fake data to satisfy constraints
                         fakecons = self._apply_constrained(fake_act)
 
                     real = torch.from_numpy(real.astype('float32')).to(self._device)
@@ -517,22 +552,36 @@ class CTGAN(BaseSynthesizer):
                     y_real = discriminator(real_cat)
 
                     pen = discriminator.calc_gradient_penalty(
-                        real_cat, fake_cat, self._device, self.pac)
+                        real_cat, fake_cat, self._device, self.pac
+                    )
+                    
+                    # loss on synthetic data
                     loss_syn_d = torch.mean(y_fake)
+                    # loss on real data
                     loss_real_d = torch.mean(y_real)
-
+                    # discriminator loss 
                     loss_d = -(loss_real_d - loss_syn_d)
 
+                    # backpropagation for discriminator
                     optimizerD.zero_grad()
                     pen.backward(retain_graph=True)
                     loss_d.backward()
                     optimizerD.step()
+                    
                     mean_d_syn += loss_syn_d
                     mean_d_real += loss_real_d
                     mean_d += loss_d
-                    #wandb.log({'steps/1step_disc_real': loss_real_d, 'steps/1step_disc_syn': loss_real_d, 'steps/1step_disc': loss_d})
+                    
+                    wandb.log({
+                        'steps/1step_disc_real': loss_real_d, 
+                        'steps/1step_disc_syn': loss_real_d, 
+                        'steps/1step_disc': loss_d
+                    })
+                    
+                # Generator Update Step
+                # After updating the discriminator, update the generator once.
 
-
+                # sample a new noise vector
                 fakez = torch.normal(mean=mean, std=std)
                 condvec = self._data_sampler.sample_condvec(self._batch_size)
 
@@ -561,21 +610,29 @@ class CTGAN(BaseSynthesizer):
                     cross_entropy = 0
                 else:
                     cross_entropy = self._cond_loss(fake, c1, m1)
+                    
                 #self.inverse.retain_grad()
+                
+                # discriminator's loss on fake data + CE loss to handle discrete columns
                 loss_g = -torch.mean(y_fake) + cross_entropy
+                
+                # backpropagation for generator
                 optimizerG.zero_grad()
                 loss_g.backward()
                 #grad = self._generator.seq[-1].weight.grad
                 #self.test_gradient(grad)
-
-
                 optimizerG.step()
 
-
+                # average discriminator losses
                 loss_d_syn = mean_d_syn/self._discriminator_steps
                 loss_d_real = mean_d_real/self._discriminator_steps
                 loss_d = -(loss_d_real - loss_d_syn)
-                # wandb.log({'steps/gen_loss': loss_g, 'steps/disc_loss': loss_d})
+                wandb.log({
+                    'steps/gen_loss': loss_g, 
+                    'steps/disc_loss': loss_d
+                })
+                
+                # accumulate losses for epoch-wise tracking
                 loss_g_running += loss_g
                 loss_d_syn_running += loss_d_syn
                 loss_d_real_running += loss_d_real
@@ -585,17 +642,38 @@ class CTGAN(BaseSynthesizer):
             # loss_d_syn_all.append(loss_d_syn_running.item()/steps_per_epoch)
             # loss_d_real_all.append(loss_d_real_running.item()/steps_per_epoch)
             # loss_d_all.append(loss_d_running.item()/steps_per_epoch)
-            wandb.log({'epochs/epoch': epoch, 'epochs/loss_gen': loss_g_running/steps_per_epoch, 'epochs/loss_disc_syn': loss_d_syn_running/steps_per_epoch, 'epochs/loss_disc_real': loss_d_real_running/steps_per_epoch, 'epochs/loss_disc': loss_d_running/steps_per_epoch})
-            #wandb.log({'learning_rates/g_lr': self._generator_lr, 'learning_rates/d_lr': self._discriminator_lr})
+            
+            # log epoch-wise losses to wandb
+            wandb.log({
+                'epochs/epoch': epoch, 
+                'epochs/loss_gen': loss_g_running/steps_per_epoch, 
+                'epochs/loss_disc_syn': loss_d_syn_running/steps_per_epoch, 
+                'epochs/loss_disc_real': loss_d_real_running/steps_per_epoch, 
+                'epochs/loss_disc': loss_d_running/steps_per_epoch
+            })
+            
+            # log learning rates to wandb
+            wandb.log({
+                'learning_rates/g_lr': self._generator_lr, 
+                'learning_rates/d_lr': self._discriminator_lr
+            })
 
             if self._verbose:
                 print(f'Epoch {epoch+1}, Loss G: {loss_g.detach().cpu(): .4f},'  # noqa: T001
                       f'Loss D: {loss_d.detach().cpu(): .4f}',
                       flush=True)
                 
-            # cons_rate, batch_rate, ind_score = self.eval_cons_layer(columns)
-            # wandb.log({'constraints/mean_ind_score': ind_score.mean(), 'constraints/batch_rate': batch_rate, 'constraints/cons_rate': cons_rate})
-            # wandb.log({f'constraints/ind_score_{epoch}': ind_score[epoch] for epoch in range(len(ind_score))})
+            cons_rate, batch_rate, ind_score = self.eval_cons_layer(columns)
+            
+            # log constraint satisfaction metrics to wandb
+            wandb.log({
+                'constraints/mean_ind_score': ind_score.mean(), 
+                'constraints/batch_rate': batch_rate, 
+                'constraints/cons_rate': cons_rate
+            })
+            wandb.log({
+                f'constraints/ind_score_{epoch}': ind_score[epoch] for epoch in range(len(ind_score))
+            })
             
             if epoch >= 25 and epoch % args.save_every_n_epochs == 0:
                 torch.save(self._generator, f"{self._path}/model_{epoch}.pt")
