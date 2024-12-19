@@ -47,13 +47,23 @@ class DataTransformer(object):
         """
         column_name = data.columns[0]
         print(column_name, data.columns)
-        gm = ClusterBasedNormalizer(model_missing_values='random', max_clusters=min(len(data), 10), enforce_min_max_values=True)
+        
+        gm = ClusterBasedNormalizer(
+            model_missing_values='random', 
+            max_clusters=min(len(data), 10), 
+            enforce_min_max_values=True
+        )
         gm.fit(data, column_name)
+        
         num_components = sum(gm.valid_component_indicator)
+        
         return ColumnTransformInfo(
-            column_name=column_name, column_type='continuous', transform=gm,
+            column_name=column_name, 
+            column_type='continuous', 
+            transform=gm,
             output_info=[SpanInfo(1, 'tanh'), SpanInfo(num_components, 'softmax')],
-            output_dimensions=1 + num_components)
+            output_dimensions=1 + num_components
+        )
 
     def _fit_discrete(self, data):
         """Fit one hot encoder for discrete column.
@@ -76,6 +86,7 @@ class DataTransformer(object):
             output_info=[SpanInfo(num_categories, 'softmax')],
             output_dimensions=num_categories)
 
+
     def fit(self, raw_data, discrete_columns=()):
         """Fit the ``DataTransformer``.
 
@@ -97,12 +108,15 @@ class DataTransformer(object):
 
         self._column_raw_dtypes = raw_data.infer_objects().dtypes
         self._column_transform_info_list = []
+        
+        # discrete/continuous transformer
         for column_name in raw_data.columns:
             if column_name in discrete_columns:
                 column_transform_info = self._fit_discrete(raw_data[[column_name]])
             else:
                 column_transform_info = self._fit_continuous(raw_data[[column_name]])
 
+            # accumulate transformation information
             self.output_info_list.append(column_transform_info.output_info)
             self.output_dimensions += column_transform_info.output_dimensions
             self._column_transform_info_list.append(column_transform_info)

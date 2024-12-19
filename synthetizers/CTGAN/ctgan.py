@@ -675,6 +675,7 @@ class CTGAN(BaseSynthesizer):
                 f'constraints/ind_score_{epoch}': ind_score[epoch] for epoch in range(len(ind_score))
             })
             
+            # save the generator model at specified intervals
             if epoch >= 25 and epoch % args.save_every_n_epochs == 0:
                 torch.save(self._generator, f"{self._path}/model_{epoch}.pt")
                 # self.save(f"{self._path}/ctgan_model_{epoch}.pt")

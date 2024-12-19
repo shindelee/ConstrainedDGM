@@ -10,7 +10,7 @@ from constraints_code.feature_orderings import set_random_ordering
 import pandas as pd
 INFINITY = torch.inf
 
-
+# retrieve constraints associated with a specific variable
 def get_constr_at_level_x(x, sets_of_constr):
     for var in sets_of_constr:
         if var.id == x.id:
@@ -29,8 +29,10 @@ def get_partial_x_correction(x: Variable, x_positive: bool, x_constraints: List[
 
     # dependency_complements = [preds[:, x.id]] # Note: the original prediction cannot be here, as this function gets called twice: for pos and neg occurences of x!
     # so using the original value of x here can undo the partial correction for pos occurrences of x!
+    
     dependency_complements = [] # size: num_atom_dependencies x B (i.e. B=batch size)
     mask_sat_batch_elem = None
+    
     for constr in x_constraints:
         # print(constr.readable(), 'LLLLLLLLLLLLLLLL')
         mask_sat_batch_elem = None  # NOTE: the mask should be reset when a new constraint is considered, regardless of its type (ineq or disj of ineq!)
@@ -111,6 +113,7 @@ def get_partial_x_correction(x: Variable, x_positive: bool, x_constraints: List[
     return partially_corrected_val
 
 
+# combine initial values with positive and negative corrections to obtain final corrected values
 def get_final_x_correction(initial_x_val: torch.Tensor, pos_x_corrected: torch.Tensor,
                            neg_x_corrected: torch.Tensor) -> torch.Tensor:
     # print(initial_x_val, pos_x_corrected, neg_x_corrected, 'VAR25!!!')
@@ -153,16 +156,23 @@ def correct_preds(preds: torch.Tensor, ordering: List[Variable], sets_of_constr:
     # an ordering of the n variables and
     # a set of constraints computed at each variable w.r.t. descending order of the provided ordering
     # correct the preds according to the constraints in ascending order w.r.t. provided ordering
+    
     corrected_preds = preds.clone()
 
     for x in ordering:
+        # index of the variable in the predictions tensor
         pos = x.id
         x_constr = get_constr_at_level_x(x, sets_of_constr)
+        
         if len(x_constr) == 0:
             continue
+        
         # print(x.id, [e.readable() for e in x_constr], 'KKKK')  # .readable()],'@@@')
+        
+        # split constraints into positive and negative sets
         pos_x_constr, neg_x_constr = get_pos_neg_x_constr(x, x_constr)
 
+        # apply partial corrections based on positive constraints and negative constraints
         pos_x_corrected = get_partial_x_correction(x, True, pos_x_constr, preds)
         neg_x_corrected = get_partial_x_correction(x, False, neg_x_constr, preds)
 
@@ -170,6 +180,8 @@ def correct_preds(preds: torch.Tensor, ordering: List[Variable], sets_of_constr:
         # print('neg', [e.readable() for e in neg_x_constr], preds[pos], neg_x_corrected)
 
         corrected_preds[:,pos] = get_final_x_correction(preds[:,pos], pos_x_corrected, neg_x_corrected)
+        
+        # update preds for the next variable's correction
         preds = corrected_preds.clone()
         corrected_preds = preds.clone()
 
