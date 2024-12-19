@@ -400,6 +400,7 @@ class CTGAN(BaseSynthesizer):
     @random_state
     def fit(self, args, train_data, discrete_columns=(), epochs=None):
         # discrete_columns = cat_cols
+        
         """Fit the CTGAN Synthesizer models to the training data.
 
         Args:
@@ -412,14 +413,15 @@ class CTGAN(BaseSynthesizer):
                 a ``pandas.DataFrame``, this list should contain the column names.
         """
         
+        # initialize training parameters and constraints
         self.args = args
         self.constraints, self.sets_of_constr, self.ordering = self.get_sets_constraints(
             args.label_ordering, 
             args.constraints_file
         )
-
         self._validate_discrete_columns(train_data, discrete_columns)
 
+        # training epochs
         if epochs is None:
             epochs = self._epochs
         else:
@@ -428,7 +430,8 @@ class CTGAN(BaseSynthesizer):
                  'in a future version. Please pass `epochs` to the constructor instead'),
                 DeprecationWarning
             )
-            
+        
+        # initialise and fit data transformer - handles data normalisation and encoding
         self._transformer = DataTransformer()
         print('Start fit transformer', discrete_columns, train_data.shape)
         
@@ -447,8 +450,9 @@ class CTGAN(BaseSynthesizer):
         columns = train_data.columns.values.tolist()
         train_data = self._transformer.transform(train_data, None)
         print('End fit data')
-
         discrete_cols= self.get_discrete_col()
+        
+        # sample batches of data during training
         self._data_sampler = DataSampler(
             train_data,
             self._transformer.output_info_list,
@@ -471,6 +475,7 @@ class CTGAN(BaseSynthesizer):
             pac=self.pac
         ).to(self._device)
 
+        # optimiser
         if args.optimiser == "adam":
             optimizerG = Adam(self._generator.parameters(), lr=self._generator_lr, betas=(0.5, 0.9), weight_decay=self._generator_decay)
             optimizerD = Adam(discriminator.parameters(), lr=self._discriminator_lr, betas=(0.5, 0.9), weight_decay=self._discriminator_decay)
@@ -483,26 +488,25 @@ class CTGAN(BaseSynthesizer):
         else:
             pass
     
-        # define the mean and standard deviation for the noise vector (z) sampled for the generator
+        # mean and standard deviation for the noise vector (z) sampled for the generator
         mean = torch.zeros(self._batch_size, self._embedding_dim, device=self._device)
         std = mean + 1
 
         steps_per_epoch = max(len(train_data) // self._batch_size, 1)
         loss_g_all, loss_d_syn_all,  loss_d_real_all, loss_d_all = [], [], [], []
 
-        # training
+        # training loop
         for epoch in range(epochs):
             # cumulative loss variables for the current epoch
             loss_g_running,  loss_d_syn_running, loss_d_real_running, loss_d_running = 0, 0, 0, 0
             for id_ in tqdm(range(steps_per_epoch), total=steps_per_epoch):
                 
-                # Discriminator training steps
+                # discriminator training steps
                 mean_d = 0
                 mean_d_syn = 0
                 mean_d_real = 0
 
                 for n in range(self._discriminator_steps):
-                    
                     # sample noise vector (z) from a normal distribution
                     fakez = torch.normal(mean=mean, std=std)
 
@@ -533,6 +537,7 @@ class CTGAN(BaseSynthesizer):
                     # apply activation functions to the generator's output
                     fake_act = self._apply_activate(fake)
                     
+                    # apply constraints (constrained version)
                     if self._version=="unconstrained" or self._version == "postprocessing":
                         # no constraints applied; clone the activated fake data
                         fakecons = fake_act.clone()
@@ -548,7 +553,8 @@ class CTGAN(BaseSynthesizer):
                         real_cat = real
                         fake_cat = fakecons
 
-                    y_fake = discriminator(fake_cat.squeeze())
+                    # real and fake data
+                    y_fake = discriminator(fake_cat.squeeze())          # if dim is not specified, all dimensions with size 1 are removed.
                     y_real = discriminator(real_cat)
 
                     pen = discriminator.calc_gradient_penalty(
@@ -559,10 +565,10 @@ class CTGAN(BaseSynthesizer):
                     loss_syn_d = torch.mean(y_fake)
                     # loss on real data
                     loss_real_d = torch.mean(y_real)
-                    # discriminator loss 
+                    # discriminator loss (wasserstein)
                     loss_d = -(loss_real_d - loss_syn_d)
 
-                    # backpropagation for discriminator
+                    # backpropagation and optimisation: discriminator
                     optimizerD.zero_grad()
                     pen.backward(retain_graph=True)
                     loss_d.backward()
@@ -578,7 +584,7 @@ class CTGAN(BaseSynthesizer):
                         'steps/1step_disc': loss_d
                     })
                     
-                # Generator Update Step
+                # Generator Update 
                 # After updating the discriminator, update the generator once.
 
                 # sample a new noise vector
@@ -593,14 +599,17 @@ class CTGAN(BaseSynthesizer):
                     m1 = torch.from_numpy(m1).to(self._device)
                     fakez = torch.cat([fakez, c1], dim=1)
 
+                # generate fake data
                 fake = self._generator(fakez)
-                
                 fakeact = self._apply_activate(fake)
+                
+                # apply constraints (constrained version)
                 if self._version=="unconstrained" or self._version == "postprocessing":
                     fakecons = fakeact.clone()
                 else:
                     fakecons = self._apply_constrained(fakeact)
-
+                
+                # discriminator evaluation
                 if c1 is not None:
                     y_fake = discriminator(torch.cat([fakecons, c1], dim=1))
                 else:
@@ -611,12 +620,12 @@ class CTGAN(BaseSynthesizer):
                 else:
                     cross_entropy = self._cond_loss(fake, c1, m1)
                     
-                #self.inverse.retain_grad()
+                # self.inverse.retain_grad()
                 
                 # discriminator's loss on fake data + CE loss to handle discrete columns
                 loss_g = -torch.mean(y_fake) + cross_entropy
                 
-                # backpropagation for generator
+                # backpropagation and optimisation: generator
                 optimizerG.zero_grad()
                 loss_g.backward()
                 #grad = self._generator.seq[-1].weight.grad
@@ -680,6 +689,7 @@ class CTGAN(BaseSynthesizer):
                 torch.save(self._generator, f"{self._path}/model_{epoch}.pt")
                 # self.save(f"{self._path}/ctgan_model_{epoch}.pt")
 
+        # save final generator model
         PATH = f"{self._path}/model.pt"
         torch.save(self._generator, PATH)
         # PATH = f"{self._path}/ctgan_model.pt"
@@ -744,6 +754,7 @@ class CTGAN(BaseSynthesizer):
             fake = self._generator(fakez)
             fakeact = self._apply_activate(fake)
             data.append(fakeact)
+            
         data = torch.concat(data, axis=0)
         data = data[:n]
         inverse = self._transformer.inverse_transform(data)
@@ -758,6 +769,7 @@ class CTGAN(BaseSynthesizer):
 
     def set_device(self, device):
         """Set the `device` to be used ('GPU' or 'CPU)."""
+        
         self._device = device
         if self._generator is not None:
             self._generator.to(self._device)
