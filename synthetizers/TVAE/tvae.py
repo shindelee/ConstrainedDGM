@@ -309,9 +309,9 @@ class TVAE(BaseSynthesizer):
             if self._verbose:
                 print(f'Epoch {epoch+1}, Loss: {loss.detach().cpu(): .4f}',flush=True)
                 
-            # cons_rate, batch_rate, ind_score = self.eval_cons_layer(columns)
-            # wandb.log({'constraints/mean_ind_score': ind_score.mean(), 'constraints/batch_rate': batch_rate, 'constraints/cons_rate': cons_rate})
-            # wandb.log({f'constraints/ind_score_{epoch}': ind_score[epoch] for epoch in range(len(ind_score))})
+            cons_rate, batch_rate, ind_score = self.eval_cons_layer(columns)
+            wandb.log({'constraints/mean_ind_score': ind_score.mean(), 'constraints/batch_rate': batch_rate, 'constraints/cons_rate': cons_rate})
+            wandb.log({f'constraints/ind_score_{epoch}': ind_score[epoch] for epoch in range(len(ind_score))})
             
             if epoch >= 25 and epoch % args.save_every_n_epochs == 0:
                 torch.save(self.decoder, f"{self._path}/model_{epoch}.pt")
